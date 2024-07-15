@@ -2,8 +2,8 @@ pub fn bytes_to_hex(data: &[u8]) -> String {
     data.iter()
         .flat_map(|x| {
             [
-                char::from_digit((x & 0xF).into(), 16).unwrap(),
                 char::from_digit(((x & 0xF0) >> 4).into(), 16).unwrap(),
+                char::from_digit((x & 0xF).into(), 16).unwrap(),
             ]
         })
         .collect::<String>()
