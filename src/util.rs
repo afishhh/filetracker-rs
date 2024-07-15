@@ -14,9 +14,10 @@ pub fn hex_to_byte_array<const N: usize>(data: &str) -> Option<[u8; N]> {
         return None;
     }
 
+    let mut it = data.chars();
     let mut result = [0u8; N];
-    for (i, j) in (0..N * 2).step_by(2).enumerate() {
-        result[i] = u8::from_str_radix(&data[j..j + 2], 16).ok()?
+    for byte in result.iter_mut() {
+        *byte = ((it.next()?.to_digit(16)? << 4) | it.next()?.to_digit(16)?) as u8;
     }
 
     Some(result)
