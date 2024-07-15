@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::lockmap::LockMap;
+use crate::{lockmap::LockMap, util::bytes_to_hex};
 
 fn read_usize(path: &Path) -> std::io::Result<usize> {
     std::fs::read_to_string(path)?
@@ -27,15 +27,7 @@ impl BlobStorage {
     }
 
     fn path_to_blob(&self, sha256: &[u8; 32]) -> PathBuf {
-        let hex = sha256
-            .iter()
-            .flat_map(|x| {
-                [
-                    char::from_digit((x & 0xF).into(), 16).unwrap(),
-                    char::from_digit(((x & 0xF0) >> 4).into(), 16).unwrap(),
-                ]
-            })
-            .collect::<String>();
+        let hex = bytes_to_hex(sha256);
 
         self.blobs.join(&hex[0..2]).join(&hex[2..])
     }

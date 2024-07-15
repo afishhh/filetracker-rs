@@ -13,9 +13,12 @@ use clap::Parser;
 use http_body_util::BodyExt;
 use serde::{Deserialize, Deserializer};
 
+mod util;
+
 mod blobstorage;
 mod storage;
 use storage::{FileMetadata, Storage};
+use util::{bytes_to_hex, hex_to_byte_array};
 type StorageImpl = storage::LocalStorage;
 
 mod lockmap;
@@ -50,6 +53,11 @@ fn file_response_builder(
             .header("Content-Encoding", "gzip")
             .header("Logical-Size", decompressed_size),
     }
+    // NOTE: This header is not present in the original version of filetracker.
+    //       It is included as an extension.
+    //       Also this is not X-SHA256-Checksum because the original filetracker developers
+    //       apparently were not aware of such a thing as "standards".
+    .header("SHA256-Checksum", bytes_to_hex(&metadata.checksum))
     .header("Last-Modified", metadata.version.to_rfc2822())
     .header("Content-Type", "application/octet-stream")
 }
@@ -135,14 +143,7 @@ async fn put_file(
             if let Some(result) = value
                 .to_str()
                 .ok()
-                .filter(|x| x.len() == 64)
-                .and_then(|value| {
-                    let mut result = [0u8; 32];
-                    for (i, j) in (0..result.len() * 2).step_by(2).enumerate() {
-                        result[i] = u8::from_str_radix(&value[j..j + 2], 16).ok()?
-                    }
-                    Some(result)
-                })
+                .and_then(|value| hex_to_byte_array(value))
             {
                 Some(result)
             } else {
