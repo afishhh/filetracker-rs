@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", default-features = false, features = ["macros", "http1", "query", "json", "tokio"] }
 
 # These are all dependencies of axum anyway
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -12,9 +12,6 @@ bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 http-body-util = "0.1"
-tracing = "0.1"
-
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # for RFC 2822 time serialization
 chrono = { version = "0.4", features = ["serde"] }

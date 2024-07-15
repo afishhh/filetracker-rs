@@ -16,8 +16,6 @@ use serde::{Deserialize, Deserializer};
 mod blobstorage;
 mod storage;
 use storage::{FileMetadata, Storage};
-use tracing::trace;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 type StorageImpl = storage::LocalStorage;
 
 mod lockmap;
@@ -63,8 +61,6 @@ async fn get_version() -> Json<serde_json::Value> {
 }
 
 async fn get_file(Path(path): Path<String>, State(storage): State<Arc<StorageImpl>>) -> Response {
-    trace!(method = "GET", path = path);
-
     let (metadata, data) = match storage.get(&path).await {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return empty_not_found(),
@@ -77,8 +73,6 @@ async fn get_file(Path(path): Path<String>, State(storage): State<Arc<StorageImp
 }
 
 async fn head_file(Path(path): Path<String>, State(storage): State<Arc<StorageImpl>>) -> Response {
-    trace!(method = "HEAD", path = path);
-
     match storage.head(&path).await {
         Ok((metadata, len)) => file_response_builder(metadata, len)
             .body(make_empty_body())
@@ -128,8 +122,6 @@ async fn put_file(
     Query(query): Query<LastModifiedQuery>,
     request: Request,
 ) -> Response {
-    trace!(method = "PUT", path = path);
-
     let version = query.last_modified.unwrap_or_else(Utc::now);
 
     let is_gzip = match request.headers().get("Content-Encoding") {
@@ -188,12 +180,6 @@ async fn delete_file(
     State(storage): State<Arc<StorageImpl>>,
     Query(query): Query<LastModifiedQuery>,
 ) -> Response {
-    trace!(
-        method = "DELETE",
-        path = path,
-        version = query.last_modified.map(|x| x.to_string())
-    );
-
     match storage
         .delete(&path, query.last_modified.unwrap_or_else(Utc::now))
         .await
@@ -210,12 +196,6 @@ async fn list_files(
     State(storage): State<Arc<StorageImpl>>,
     Query(query): Query<LastModifiedQuery>,
 ) -> Response {
-    trace!(
-        method = "LIST",
-        path = path.as_deref(),
-        version = query.last_modified.map(|x| x.to_string())
-    );
-
     let mut iterator = match storage
         .list(
             path.as_deref().map(String::as_str).unwrap_or(""),
@@ -246,7 +226,7 @@ async fn list_files(
 
 #[derive(clap::Parser)]
 struct Opts {
-    #[clap(long = "listen", short = 'l', default_value = "9999")]
+    #[clap(long = "listen", short = 'l', default_value = "127.0.0.1:9999")]
     address: SocketAddr,
     #[clap(long, short)]
     directory: PathBuf,
@@ -254,11 +234,6 @@ struct Opts {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let opts = Opts::parse();
 
     let listener = tokio::net::TcpListener::bind(opts.address).await.unwrap();
