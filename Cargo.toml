@@ -23,3 +23,6 @@ flate2 = "1"
 sha2 = "0.10"
 
 clap = { version = "4.5", features = ["derive"] }
+
+[profile.release]
+strip = true
