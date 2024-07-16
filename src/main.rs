@@ -206,11 +206,12 @@ async fn list_files(
     };
 
     let mut result = String::new();
-    while let Some((path, metadata, useless_number)) = iterator.next().transpose().unwrap() {
+    while let Some((path, metadata)) = iterator.next().transpose().unwrap() {
         write!(
             result,
-            "{path}\n{}\n{useless_number}\n",
-            metadata.version.timestamp()
+            "{path}\n{}\n{}\n",
+            metadata.version.timestamp(),
+            metadata.decompressed_size
         )
         .unwrap();
     }

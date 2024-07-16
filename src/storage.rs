@@ -27,7 +27,7 @@ pub trait Storage {
         &self,
         path: &str,
         max_version: DateTime<Utc>,
-    ) -> std::io::Result<impl Iterator<Item = std::io::Result<(String, FileMetadata, usize)>>>;
+    ) -> std::io::Result<impl Iterator<Item = std::io::Result<(String, FileMetadata)>>>;
 }
 
 pub struct LocalStorage {
@@ -61,11 +61,10 @@ struct FileLister {
     readdir_stack: Vec<ReadDir>,
     metadata: PathBuf,
     max_version: DateTime<Utc>,
-    level_offset: usize,
 }
 
 impl Iterator for FileLister {
-    type Item = std::io::Result<(String, FileMetadata, usize)>;
+    type Item = std::io::Result<(String, FileMetadata)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         macro_rules! try_ {
@@ -88,11 +87,7 @@ impl Iterator for FileLister {
                         let metadata = try_!(FileMetadata::read(&path));
                         if metadata.version <= self.max_version {
                             let relative = path.strip_prefix(&self.metadata).unwrap();
-                            return Some(Ok((
-                                relative.to_str().unwrap().to_string(),
-                                metadata,
-                                73 + self.level_offset + 3 * relative.components().count(),
-                            )));
+                            return Some(Ok((relative.to_str().unwrap().to_string(), metadata)));
                         }
                     }
                     Ok(_) => (),
@@ -229,14 +224,13 @@ impl Storage for LocalStorage {
         &self,
         path: &str,
         max_version: DateTime<Utc>,
-    ) -> std::io::Result<impl Iterator<Item = std::io::Result<(String, FileMetadata, usize)>>> {
+    ) -> std::io::Result<impl Iterator<Item = std::io::Result<(String, FileMetadata)>>> {
         let metadata = self.metadata.join(path);
         let iter = metadata.read_dir()?;
         Ok(FileLister {
             metadata,
             max_version,
             readdir_stack: vec![iter],
-            level_offset: path.chars().filter(|x| *x == '/').count(),
         })
     }
 }
