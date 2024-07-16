@@ -87,7 +87,8 @@ async fn get_file(Path(path): Path<String>, State(storage): State<Arc<StorageImp
 
 async fn head_file(Path(path): Path<String>, State(storage): State<Arc<StorageImpl>>) -> Response {
     match storage.head(&path).await {
-        Ok(metadata) => file_response_builder(metadata)
+        Ok((metadata, len)) => file_response_builder(metadata)
+            .header("Content-Length", len)
             .body(make_empty_body())
             .unwrap(),
         Err(e) => handle_io_error(e),

@@ -12,7 +12,7 @@ use crate::{blobstorage::BlobStorage, lockmap::LockMap};
 
 pub trait Storage {
     async fn get(&self, path: &str) -> std::io::Result<(FileMetadata, Vec<u8>)>;
-    async fn head(&self, path: &str) -> std::io::Result<FileMetadata>;
+    async fn head(&self, path: &str) -> std::io::Result<(FileMetadata, u64)>;
     async fn put(
         &self,
         path: &str,
@@ -127,10 +127,11 @@ impl Storage for LocalStorage {
         Ok((metadata, content))
     }
 
-    async fn head(&self, path: &str) -> std::io::Result<FileMetadata> {
+    async fn head(&self, path: &str) -> std::io::Result<(FileMetadata, u64)> {
         let _guard = self.locks.lock_ref(path).await;
         let metadata = self.read_meta_for(path)?;
-        Ok(metadata)
+        let len = self.blobs.metadata(&metadata.checksum)?.len();
+        Ok((metadata, len))
     }
 
     async fn put(
