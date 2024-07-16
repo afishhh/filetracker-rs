@@ -7,7 +7,6 @@ use axum::{
     middleware::Next,
     response::Response,
     routing::get,
-    Json,
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use clap::Parser;
@@ -71,10 +70,8 @@ fn file_response_builder(metadata: FileMetadata) -> axum::http::response::Builde
     .header("Content-Type", "application/octet-stream")
 }
 
-async fn get_version() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "protocol_versions": [2]
-    }))
+async fn get_version() -> &'static str {
+    r#"{"protocol_versions":[2]}"#
 }
 
 async fn get_file(Path(path): Path<String>, State(storage): State<Arc<StorageImpl>>) -> Response {

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7", default-features = false, features = ["macros", "http1", "query", "json", "tokio"] }
+axum = { version = "0.7", default-features = false, features = ["macros", "http1", "query", "tokio"] }
 
 # These are all dependencies of axum anyway
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
