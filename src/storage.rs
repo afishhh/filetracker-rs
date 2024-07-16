@@ -148,7 +148,7 @@ impl Storage for LocalStorage {
                 content.len(),
                 checksum.unwrap_or_else(|| Sha256::new().chain_update(content).finalize().into()),
                 Box::new(flate2::read::GzEncoder::new(
-                    std::io::Cursor::new(content),
+                    content,
                     flate2::Compression::new(9),
                 )) as Box<dyn Read + Send>,
             )
@@ -159,7 +159,7 @@ impl Storage for LocalStorage {
                 Box::new(std::io::Cursor::new(content)) as Box<dyn Read + Send>,
             )
         } else {
-            let mut decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(content));
+            let mut decoder = flate2::read::GzDecoder::new(content);
             let mut buf = [0; 4096];
             let mut decompressed_size = 0;
             let mut checksum = Sha256::new();
