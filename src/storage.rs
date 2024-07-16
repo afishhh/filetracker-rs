@@ -1,5 +1,7 @@
 use std::{
-    fs::ReadDir, io::Read, os::unix::fs::MetadataExt, path::{Path, PathBuf}
+    fs::ReadDir,
+    io::Read,
+    path::{Path, PathBuf},
 };
 
 use chrono::{DateTime, Utc};
@@ -10,7 +12,7 @@ use crate::{blobstorage::BlobStorage, lockmap::LockMap};
 
 pub trait Storage {
     async fn get(&self, path: &str) -> std::io::Result<(FileMetadata, Vec<u8>)>;
-    async fn head(&self, path: &str) -> std::io::Result<(FileMetadata, usize)>;
+    async fn head(&self, path: &str) -> std::io::Result<FileMetadata>;
     async fn put(
         &self,
         path: &str,
@@ -37,7 +39,7 @@ pub struct LocalStorage {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Compression {
     None,
-    Gzip { decompressed_size: usize },
+    Gzip,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,6 +47,7 @@ pub struct FileMetadata {
     pub version: DateTime<Utc>,
     pub checksum: [u8; 32],
     pub compression: Compression,
+    pub decompressed_size: usize,
 }
 
 impl FileMetadata {
@@ -129,14 +132,10 @@ impl Storage for LocalStorage {
         Ok((metadata, content))
     }
 
-    async fn head(&self, path: &str) -> std::io::Result<(FileMetadata, usize)> {
+    async fn head(&self, path: &str) -> std::io::Result<FileMetadata> {
         let _guard = self.locks.lock_ref(path).await;
         let metadata = self.read_meta_for(path)?;
-        let size = self.blobs.metadata(&metadata.checksum)?.size() as usize;
-        Ok((
-            metadata,
-            size,
-        ))
+        Ok(metadata)
     }
 
     async fn put(
@@ -207,7 +206,8 @@ impl Storage for LocalStorage {
             serde_json::to_string(&FileMetadata {
                 version,
                 checksum,
-                compression: Compression::Gzip { decompressed_size },
+                compression: Compression::Gzip,
+                decompressed_size,
             })
             .unwrap(),
         )?;

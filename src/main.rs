@@ -43,16 +43,12 @@ fn make_error_response(data: impl Into<Bytes>, status: StatusCode) -> Response {
     r
 }
 
-fn file_response_builder(
-    metadata: FileMetadata,
-    content_size: usize,
-) -> axum::http::response::Builder {
+fn file_response_builder(metadata: FileMetadata) -> axum::http::response::Builder {
     match metadata.compression {
-        storage::Compression::None => Response::builder().header("Logical-Size", content_size),
-        storage::Compression::Gzip { decompressed_size } => Response::builder()
-            .header("Content-Encoding", "gzip")
-            .header("Logical-Size", decompressed_size),
+        storage::Compression::None => Response::builder(),
+        storage::Compression::Gzip => Response::builder().header("Content-Encoding", "gzip"),
     }
+    .header("Logical-Size", metadata.decompressed_size)
     // NOTE: This header is not present in the original version of filetracker.
     //       It is included as an extension.
     //       Also this is not X-SHA256-Checksum because the original filetracker developers
@@ -75,14 +71,14 @@ async fn get_file(Path(path): Path<String>, State(storage): State<Arc<StorageImp
         e => e.unwrap(),
     };
 
-    file_response_builder(metadata, data.len())
+    file_response_builder(metadata)
         .body(make_body(data))
         .unwrap()
 }
 
 async fn head_file(Path(path): Path<String>, State(storage): State<Arc<StorageImpl>>) -> Response {
     match storage.head(&path).await {
-        Ok((metadata, len)) => file_response_builder(metadata, len)
+        Ok(metadata) => file_response_builder(metadata)
             .body(make_empty_body())
             .unwrap(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => empty_not_found(),
@@ -140,11 +136,7 @@ async fn put_file(
 
     let checksum = match request.headers().get("SHA256-Checksum") {
         Some(value) => {
-            if let Some(result) = value
-                .to_str()
-                .ok()
-                .and_then(|value| hex_to_byte_array(value))
-            {
+            if let Some(result) = value.to_str().ok().and_then(hex_to_byte_array) {
                 Some(result)
             } else {
                 return make_error_response("Invalid SHA256-Checksum", StatusCode::BAD_REQUEST);
