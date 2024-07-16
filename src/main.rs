@@ -4,12 +4,14 @@ use axum::{
     body::{Body, Bytes},
     extract::{Path, Query, Request, State},
     http::StatusCode,
+    middleware::Next,
     response::Response,
     routing::get,
     Json,
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use clap::Parser;
+use futures_util::FutureExt;
 use http_body_util::BodyExt;
 use serde::{Deserialize, Deserializer};
 
@@ -23,12 +25,6 @@ type StorageImpl = storage::LocalStorage;
 
 mod lockmap;
 
-fn empty_not_found() -> Response {
-    let mut r = Response::new(make_empty_body());
-    *r.status_mut() = StatusCode::NOT_FOUND;
-    r
-}
-
 fn make_empty_body() -> Body {
     axum::body::Body::new(http_body_util::Empty::new())
 }
@@ -41,6 +37,23 @@ fn make_error_response(data: impl Into<Bytes>, status: StatusCode) -> Response {
     let mut r = Response::new(make_body(data));
     *r.status_mut() = status;
     r
+}
+
+fn handle_io_error(error: std::io::Error) -> Response {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            make_error_response(error.to_string(), StatusCode::NOT_FOUND)
+        }
+        // FIXME: Don't do this once io_error_more is stabilised (please stabilise).
+        _ => {
+            let message = error.to_string();
+            if message.starts_with("Is a directory") || message.starts_with("Not a directory") {
+                make_error_response(error.to_string(), StatusCode::BAD_REQUEST)
+            } else {
+                panic!("io error: {message}")
+            }
+        }
+    }
 }
 
 fn file_response_builder(metadata: FileMetadata) -> axum::http::response::Builder {
@@ -67,8 +80,7 @@ async fn get_version() -> Json<serde_json::Value> {
 async fn get_file(Path(path): Path<String>, State(storage): State<Arc<StorageImpl>>) -> Response {
     let (metadata, data) = match storage.get(&path).await {
         Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return empty_not_found(),
-        e => e.unwrap(),
+        Err(e) => return handle_io_error(e),
     };
 
     file_response_builder(metadata)
@@ -81,8 +93,7 @@ async fn head_file(Path(path): Path<String>, State(storage): State<Arc<StorageIm
         Ok(metadata) => file_response_builder(metadata)
             .body(make_empty_body())
             .unwrap(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => empty_not_found(),
-        Err(other) => panic!("{other}"),
+        Err(e) => handle_io_error(e),
     }
 }
 
@@ -145,12 +156,17 @@ async fn put_file(
         None => None,
     };
 
-    let logical_size = request
+    let logical_size = match request
         .headers()
         .get("Logical-Size")
-        .map(|value| value.to_str().unwrap().parse().unwrap());
+        .map(|value| value.to_str().ok().and_then(|value| value.parse().ok()))
+    {
+        Some(Some(size)) => Some(size),
+        Some(None) => return make_error_response("Invalid Logical-Size", StatusCode::BAD_REQUEST),
+        None => None,
+    };
 
-    storage
+    if let Err(err) = storage
         .put(
             &path,
             version,
@@ -160,7 +176,9 @@ async fn put_file(
             logical_size,
         )
         .await
-        .unwrap();
+    {
+        return handle_io_error(err);
+    }
 
     Response::builder()
         .header("Last-Modified", version.to_rfc2822())
@@ -173,12 +191,11 @@ async fn delete_file(
     State(storage): State<Arc<StorageImpl>>,
     Query(query): Query<LastModifiedQuery>,
 ) -> Response {
-    match storage
+    if let Err(e) = storage
         .delete(&path, query.last_modified.unwrap_or_else(Utc::now))
         .await
     {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return empty_not_found(),
-        other => other.unwrap(),
+        return handle_io_error(e);
     }
 
     Response::new(make_empty_body())
@@ -218,6 +235,16 @@ async fn list_files(
     Response::new(make_body(result))
 }
 
+async fn catch_panic_middleware(request: Request, next: Next) -> Response {
+    match match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| next.run(request))) {
+        Ok(future) => std::panic::AssertUnwindSafe(future).catch_unwind().await,
+        Err(error) => Err(error),
+    } {
+        Ok(response) => response,
+        Err(_) => make_error_response("", StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 #[derive(clap::Parser)]
 struct Opts {
     #[clap(long = "listen", short = 'l', default_value = "127.0.0.1:9999")]
@@ -247,6 +274,7 @@ async fn main() {
             .route("/list/*path", get(list_files))
             .route("/list/", get(list_files))
             .route("/list", get(list_files))
+            .layer(axum::middleware::from_fn(catch_panic_middleware))
             .with_state(Arc::new(StorageImpl::new(&opts.directory).unwrap())),
     )
     .await

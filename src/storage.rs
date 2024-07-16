@@ -188,7 +188,7 @@ impl Storage for LocalStorage {
                 self.blobs.decref(&meta.checksum).await?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => panic!("{e}"),
+            Err(e) => return Err(e),
         }
 
         let dest_meta = self.metadata.join(path);

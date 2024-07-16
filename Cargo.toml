@@ -12,6 +12,7 @@ bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # for RFC 2822 time serialization
 chrono = { version = "0.4", features = ["serde"] }
