@@ -180,7 +180,7 @@ impl Storage for LocalStorage {
             )
         };
 
-        let _guard = self.locks.lock_ref(path);
+        let _guard = self.locks.lock_ref(path).await;
         match self.read_meta_for(path) {
             Ok(meta) => {
                 if meta.version > version {
