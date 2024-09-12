@@ -1,13 +1,37 @@
 use std::{borrow::Borrow, collections::HashMap, future::Future, hash::Hash, sync::Arc};
 
-pub struct LockMap<K: Hash + Eq> {
-    locks: std::sync::Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>,
+type LocksArc<K> = Arc<std::sync::Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>>;
+
+pub struct LockMap<K: Hash + Eq + Send + 'static> {
+    locks: LocksArc<K>,
+    cleanup_worker: tokio::task::AbortHandle,
 }
 
-impl<K: Hash + Eq> LockMap<K> {
+impl<K: Hash + Eq + Send + 'static> Drop for LockMap<K> {
+    fn drop(&mut self) {
+        self.cleanup_worker.abort();
+    }
+}
+
+async fn cleanup_worker<K: Hash + Eq + Send>(map: LocksArc<K>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+    interval.tick().await;
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        interval.tick().await;
+
+        map.lock().unwrap().retain(|_, v| Arc::strong_count(v) > 1);
+    }
+}
+
+impl<K: Hash + Eq + Send + 'static> LockMap<K> {
     pub fn new() -> Self {
+        let locks = LocksArc::<K>::default();
+        let cleanup_worker = tokio::spawn(cleanup_worker(locks.clone())).abort_handle();
         Self {
-            locks: Default::default(),
+            locks,
+            cleanup_worker,
         }
     }
 
