@@ -275,6 +275,27 @@ async fn main() {
             .layer(axum::middleware::from_fn(catch_panic_middleware))
             .with_state(Arc::new(StorageImpl::new(&opts.directory).unwrap())),
     )
+    .with_graceful_shutdown(async {
+        #[cfg(target_family = "unix")]
+        let cause = {
+            use tokio::select;
+            use tokio::signal::unix::*;
+
+            let mut sigint = signal(SignalKind::interrupt()).unwrap();
+            let mut sigterm = signal(SignalKind::terminate()).unwrap();
+            select! {
+                _ = sigint.recv() => "SIGINT",
+                _ = sigterm.recv() => "SIGTERM"
+            }
+        };
+        #[cfg(not(target_family = "unix"))]
+        let cause = {
+            tokio::signal::ctrl_c().await.unwrap();
+            "ctrl-c"
+        };
+
+        println!("{cause} signal received, shutting down gracefully");
+    })
     .await
     .unwrap()
 }
