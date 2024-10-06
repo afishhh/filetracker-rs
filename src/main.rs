@@ -14,6 +14,8 @@ use futures_util::FutureExt;
 use http_body_util::BodyExt;
 use serde::{Deserialize, Deserializer};
 
+#[macro_use]
+mod log;
 mod util;
 
 mod blobstorage;
@@ -49,7 +51,7 @@ fn handle_io_error(error: std::io::Error) -> Response {
             if message.starts_with("Is a directory") || message.starts_with("Not a directory") {
                 make_error_response(error.to_string(), StatusCode::BAD_REQUEST)
             } else {
-                panic!("io error: {message}")
+                panic!("IO error: {message}");
             }
         }
     }
@@ -234,12 +236,17 @@ async fn list_files(
 }
 
 async fn catch_panic_middleware(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
     match match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| next.run(request))) {
         Ok(future) => std::panic::AssertUnwindSafe(future).catch_unwind().await,
         Err(error) => Err(error),
     } {
         Ok(response) => response,
-        Err(_) => make_error_response("", StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => {
+            error!("The above panic occurred while handling `{method} {uri:?}`");
+            make_error_response("Internal Server Error", StatusCode::INTERNAL_SERVER_ERROR)
+        },
     }
 }
 
@@ -255,6 +262,7 @@ struct Opts {
 async fn main() {
     let opts = Opts::parse();
 
+    info!("Starting server on {}", opts.address);
     let listener = tokio::net::TcpListener::bind(opts.address).await.unwrap();
     axum::serve(
         listener,
@@ -294,7 +302,7 @@ async fn main() {
             "ctrl-c"
         };
 
-        println!("{cause} signal received, shutting down gracefully");
+        info!("{cause} signal received, shutting down gracefully");
     })
     .await
     .unwrap()
