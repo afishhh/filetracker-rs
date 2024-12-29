@@ -14,7 +14,6 @@ use futures_util::FutureExt;
 use http_body_util::BodyExt;
 use serde::{Deserialize, Deserializer};
 
-#[macro_use]
 mod log;
 mod util;
 
