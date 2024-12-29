@@ -45,15 +45,10 @@ fn handle_io_error(error: std::io::Error) -> Response {
         std::io::ErrorKind::NotFound => {
             make_error_response(error.to_string(), StatusCode::NOT_FOUND)
         }
-        // FIXME: Don't do this once io_error_more is stabilised (please stabilise).
-        _ => {
-            let message = error.to_string();
-            if message.starts_with("Is a directory") || message.starts_with("Not a directory") {
-                make_error_response(error.to_string(), StatusCode::BAD_REQUEST)
-            } else {
-                panic!("IO error: {message}");
-            }
+        std::io::ErrorKind::IsADirectory | std::io::ErrorKind::NotADirectory => {
+            make_error_response(error.to_string(), StatusCode::BAD_REQUEST)
         }
+        _ => panic!("IO error: {error}"),
     }
 }
 
@@ -246,7 +241,7 @@ async fn catch_panic_middleware(request: Request, next: Next) -> Response {
         Err(_) => {
             error!("The above panic occurred while handling `{method} {uri:?}`");
             make_error_response("Internal Server Error", StatusCode::INTERNAL_SERVER_ERROR)
-        },
+        }
     }
 }
 

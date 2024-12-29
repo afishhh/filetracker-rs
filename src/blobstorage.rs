@@ -43,11 +43,7 @@ impl BlobStorage {
             std::fs::rename(tmp_path, path)?;
             std::fs::write(count_path, b"1").map(|_| true)
         } else {
-            std::fs::write(
-                &count_path,
-                (read_usize(&count_path)? + 1).to_string(),
-            )
-            .map(|_| false)
+            std::fs::write(&count_path, (read_usize(&count_path)? + 1).to_string()).map(|_| false)
         }
     }
 
