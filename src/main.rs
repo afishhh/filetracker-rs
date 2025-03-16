@@ -3,11 +3,13 @@ use std::{fmt::Write, net::SocketAddr, path::PathBuf, sync::Arc};
 use axum::{
     body::{Body, Bytes},
     extract::{Path, Query, Request, State},
-    http::StatusCode,
+    http::{uri::PathAndQuery, StatusCode, Uri},
     middleware::Next,
     response::Response,
     routing::get,
+    ServiceExt,
 };
+use bytes::BytesMut;
 use chrono::{DateTime, FixedOffset, Utc};
 use clap::Parser;
 use futures_util::FutureExt;
@@ -254,6 +256,56 @@ async fn logging_middleware(request: Request, next: Next) -> Response {
     }
 }
 
+fn rewrite_path(path: &str) -> Option<&str> {
+    let stripped_path = path.strip_suffix('/').unwrap_or(path);
+
+    let final_path = stripped_path
+        .rfind("//")
+        // NOTE: One `/` is intentionally kept here.
+        .map(|idx| &stripped_path[idx + 1..])
+        .unwrap_or(stripped_path);
+
+    (final_path.len() != path.len()).then_some(final_path)
+}
+
+#[test]
+fn test_rewrite_path() {
+    assert_eq!(rewrite_path("/files//list/abc/"), Some("/list/abc"));
+
+    assert_eq!(rewrite_path("/files//list/abc//"), Some("/list/abc/"));
+
+    assert_eq!(rewrite_path("/files//list/abc///"), Some("/"));
+
+    assert_eq!(rewrite_path("/files/abc/def"), None);
+    assert_eq!(rewrite_path("/files/abc/efg"), None);
+
+    assert_eq!(rewrite_path("/files/abc/efg/"), Some("/files/abc/efg"));
+}
+
+async fn path_rewrite_middleware(mut request: Request, next: Next) -> Response {
+    let uri = request.uri_mut();
+
+    if let Some(rewritten_path) = rewrite_path(uri.path()) {
+        let mut buffer =
+            BytesMut::with_capacity(rewritten_path.len() + uri.query().map_or(0, |q| 1 + q.len()));
+        buffer.extend_from_slice(rewritten_path.as_bytes());
+        if let Some(q) = uri.query() {
+            buffer.extend([b'?']);
+            buffer.extend_from_slice(q.as_bytes());
+        }
+
+        debug!("Path {:?} rewritten to {:?}", uri.path(), rewritten_path);
+
+        // Absolutely useless api provided by `http` over here, no way to modify `Uri`s in any reasonable way.
+        let new_path_and_query = PathAndQuery::from_maybe_shared(buffer.freeze()).unwrap();
+        let mut parts = std::mem::take(uri).into_parts();
+        parts.path_and_query = Some(new_path_and_query);
+        *uri = Uri::from_parts(parts).unwrap();
+    }
+
+    next.run(request).await
+}
+
 #[derive(clap::Parser)]
 struct Opts {
     #[clap(long = "listen", short = 'l', default_value = "127.0.0.1:9999")]
@@ -268,24 +320,30 @@ async fn main() {
 
     info!("Starting server on {}", opts.address);
     let listener = tokio::net::TcpListener::bind(opts.address).await.unwrap();
+    let middleware = tower::ServiceBuilder::new()
+        .layer(axum::middleware::from_fn(logging_middleware))
+        .layer(axum::middleware::from_fn(path_rewrite_middleware));
     axum::serve(
         listener,
-        axum::Router::new()
-            .route("/version", get(get_version))
-            // filetracker client spaghetti code compatibility
-            .route("/version/", get(get_version))
-            .route(
-                "/files/*path",
-                get(get_file)
-                    .head(head_file)
-                    .put(put_file)
-                    .delete(delete_file),
+        middleware
+            .service(
+                axum::Router::new()
+                    .route("/version", get(get_version))
+                    // filetracker client spaghetti code compatibility
+                    .route("/version/", get(get_version))
+                    .route(
+                        "/files/*path",
+                        get(get_file)
+                            .head(head_file)
+                            .put(put_file)
+                            .delete(delete_file),
+                    )
+                    .route("/list/*path", get(list_files))
+                    .route("/list/", get(list_files))
+                    .route("/list", get(list_files))
+                    .with_state(Arc::new(StorageImpl::new(&opts.directory).unwrap())),
             )
-            .route("/list/*path", get(list_files))
-            .route("/list/", get(list_files))
-            .route("/list", get(list_files))
-            .layer(axum::middleware::from_fn(logging_middleware))
-            .with_state(Arc::new(StorageImpl::new(&opts.directory).unwrap())),
+            .into_make_service(),
     )
     .with_graceful_shutdown(async {
         #[cfg(target_family = "unix")]
