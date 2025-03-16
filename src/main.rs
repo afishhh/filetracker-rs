@@ -229,14 +229,28 @@ async fn list_files(
     Response::new(make_body(result))
 }
 
-async fn catch_panic_middleware(request: Request, next: Next) -> Response {
+async fn logging_middleware(request: Request, next: Next) -> Response {
     let method = request.method().clone();
+    let ua = request
+        .headers()
+        .get(axum::http::header::USER_AGENT)
+        .cloned()
+        .unwrap_or(axum::http::HeaderValue::from_static(""));
     let uri = request.uri().clone();
     match match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| next.run(request))) {
         Ok(future) => std::panic::AssertUnwindSafe(future).catch_unwind().await,
         Err(error) => Err(error),
     } {
-        Ok(response) => response,
+        Ok(response) => {
+            info!(
+                "{} {:?} {} {:?}",
+                method,
+                uri.path_and_query().map_or("", |pq| pq.as_str()),
+                response.status().as_u16(),
+                ua
+            );
+            response
+        }
         Err(_) => {
             error!("The above panic occurred while handling `{method} {uri:?}`");
             make_error_response("Internal Server Error", StatusCode::INTERNAL_SERVER_ERROR)
@@ -274,7 +288,7 @@ async fn main() {
             .route("/list/*path", get(list_files))
             .route("/list/", get(list_files))
             .route("/list", get(list_files))
-            .layer(axum::middleware::from_fn(catch_panic_middleware))
+            .layer(axum::middleware::from_fn(logging_middleware))
             .with_state(Arc::new(StorageImpl::new(&opts.directory).unwrap())),
     )
     .with_graceful_shutdown(async {
