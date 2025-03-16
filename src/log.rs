@@ -1,5 +1,6 @@
 use std::io::Write;
 
+#[expect(dead_code)]
 pub enum Level {
     Debug,
     Info,

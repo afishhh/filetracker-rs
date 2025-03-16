@@ -51,6 +51,7 @@ impl<K: Hash + Eq + Send + 'static> LockMap<K> {
             })
     }
 
+    #[expect(dead_code)]
     pub fn lock_owned(&self, key: K) -> impl Future<Output = tokio::sync::OwnedMutexGuard<()>> {
         self.locks
             .lock()
