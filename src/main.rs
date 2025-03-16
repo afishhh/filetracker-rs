@@ -19,7 +19,7 @@ mod util;
 
 mod blobstorage;
 mod storage;
-use storage::{FileMetadata, Storage};
+use storage::{FileMetadata, Storage, StorageError};
 use util::{bytes_to_hex, hex_to_byte_array};
 type StorageImpl = storage::LocalStorage;
 
@@ -39,16 +39,17 @@ fn make_error_response(data: impl Into<Bytes>, status: StatusCode) -> Response {
     r
 }
 
-fn handle_io_error(error: std::io::Error) -> Response {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => {
-            make_error_response(error.to_string(), StatusCode::NOT_FOUND)
-        }
-        std::io::ErrorKind::IsADirectory | std::io::ErrorKind::NotADirectory => {
-            make_error_response(error.to_string(), StatusCode::BAD_REQUEST)
-        }
-        _ => panic!("IO error: {error}"),
-    }
+fn handle_storage_error(error: StorageError) -> Response {
+    make_error_response(
+        error.to_string(),
+        match error {
+            StorageError::NotFound => StatusCode::NOT_FOUND,
+            StorageError::IsADirectory
+            | StorageError::NotADirectory
+            | StorageError::IllegalPath => StatusCode::BAD_REQUEST,
+            StorageError::Io(io) => panic!("IO error: {io}"),
+        },
+    )
 }
 
 fn file_response_builder(metadata: FileMetadata) -> axum::http::response::Builder {
@@ -73,7 +74,7 @@ async fn get_version() -> &'static str {
 async fn get_file(Path(path): Path<String>, State(storage): State<Arc<StorageImpl>>) -> Response {
     let (metadata, data) = match storage.get(&path).await {
         Ok(content) => content,
-        Err(e) => return handle_io_error(e),
+        Err(e) => return handle_storage_error(e),
     };
 
     file_response_builder(metadata)
@@ -87,7 +88,7 @@ async fn head_file(Path(path): Path<String>, State(storage): State<Arc<StorageIm
             .header("Content-Length", len)
             .body(make_empty_body())
             .unwrap(),
-        Err(e) => handle_io_error(e),
+        Err(e) => handle_storage_error(e),
     }
 }
 
@@ -171,7 +172,7 @@ async fn put_file(
         )
         .await
     {
-        return handle_io_error(err);
+        return handle_storage_error(err);
     }
 
     Response::builder()
@@ -189,7 +190,7 @@ async fn delete_file(
         .delete(&path, query.last_modified.unwrap_or_else(Utc::now))
         .await
     {
-        return handle_io_error(e);
+        return handle_storage_error(e);
     }
 
     Response::new(make_empty_body())
@@ -207,13 +208,8 @@ async fn list_files(
         )
         .await
     {
-        Err(e) if e.to_string().contains("Not a directory") => {
-            return make_error_response(e.to_string(), StatusCode::BAD_REQUEST)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return make_error_response(e.to_string(), StatusCode::NOT_FOUND)
-        }
-        other => other.unwrap(),
+        Ok(iter) => iter,
+        Err(error) => return handle_storage_error(error),
     };
 
     let mut result = String::new();

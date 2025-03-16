@@ -7,12 +7,40 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use thiserror::Error;
 
-use crate::{blobstorage::BlobStorage, lockmap::LockMap};
+use crate::{blobstorage::BlobStorage, lockmap::LockMap, util::normalize_lexically};
+
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("Not found")]
+    NotFound,
+    #[error("Is a directory")]
+    IsADirectory,
+    #[error("Not a directory")]
+    NotADirectory,
+    #[error("Illegal path")]
+    IllegalPath,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+impl StorageError {
+    fn from_io_public(io: std::io::Error) -> Self {
+        match io.kind() {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::IsADirectory => Self::IsADirectory,
+            std::io::ErrorKind::NotADirectory => Self::NotADirectory,
+            _ => todo!(),
+        }
+    }
+}
+
+type Result<T> = std::result::Result<T, StorageError>;
 
 pub trait Storage {
-    async fn get(&self, path: &str) -> std::io::Result<(FileMetadata, Vec<u8>)>;
-    async fn head(&self, path: &str) -> std::io::Result<(FileMetadata, u64)>;
+    async fn get(&self, path: &str) -> Result<(FileMetadata, Vec<u8>)>;
+    async fn head(&self, path: &str) -> Result<(FileMetadata, u64)>;
     async fn put(
         &self,
         path: &str,
@@ -21,13 +49,13 @@ pub trait Storage {
         content_is_gzipped: bool,
         checksum: Option<[u8; 32]>,
         logical_size: Option<usize>,
-    ) -> std::io::Result<()>;
-    async fn delete(&self, path: &str, max_version: DateTime<Utc>) -> std::io::Result<()>;
+    ) -> Result<()>;
+    async fn delete(&self, path: &str, max_version: DateTime<Utc>) -> Result<()>;
     async fn list(
         &self,
         path: &str,
         max_version: DateTime<Utc>,
-    ) -> std::io::Result<impl Iterator<Item = std::io::Result<(String, FileMetadata)>>>;
+    ) -> Result<impl Iterator<Item = std::io::Result<(String, FileMetadata)>>>;
 }
 
 pub struct LocalStorage {
@@ -59,7 +87,7 @@ impl FileMetadata {
 
 struct FileLister {
     readdir_stack: Vec<ReadDir>,
-    metadata: PathBuf,
+    root: PathBuf,
     max_version: DateTime<Utc>,
 }
 
@@ -86,7 +114,7 @@ impl Iterator for FileLister {
                         let path = e.path();
                         let metadata = try_!(FileMetadata::read(&path));
                         if metadata.version <= self.max_version {
-                            let relative = path.strip_prefix(&self.metadata).unwrap();
+                            let relative = path.strip_prefix(&self.root).unwrap();
                             return Some(Ok((relative.to_str().unwrap().to_string(), metadata)));
                         }
                     }
@@ -98,6 +126,14 @@ impl Iterator for FileLister {
                 }
             }
         }
+    }
+}
+
+struct MetadataPath(PathBuf);
+
+impl MetadataPath {
+    fn read(&self) -> Result<FileMetadata> {
+        FileMetadata::read(&self.0).map_err(StorageError::from_io_public)
     }
 }
 
@@ -114,22 +150,28 @@ impl LocalStorage {
         })
     }
 
-    fn read_meta_for(&self, path: &str) -> std::io::Result<FileMetadata> {
-        FileMetadata::read(&self.metadata.join(path))
+    fn validate_path(&self, path: &str) -> Result<MetadataPath> {
+        let path = self.metadata.join(path);
+
+        if !normalize_lexically(&path).starts_with(&self.metadata) {
+            return Err(StorageError::IllegalPath);
+        }
+
+        Ok(MetadataPath(path))
     }
 }
 
 impl Storage for LocalStorage {
-    async fn get(&self, path: &str) -> std::io::Result<(FileMetadata, Vec<u8>)> {
+    async fn get(&self, path: &str) -> Result<(FileMetadata, Vec<u8>)> {
         let _guard = self.locks.lock_ref(path).await;
-        let metadata = self.read_meta_for(path)?;
+        let metadata = self.validate_path(path)?.read()?;
         let content = self.blobs.read(&metadata.checksum)?;
         Ok((metadata, content))
     }
 
-    async fn head(&self, path: &str) -> std::io::Result<(FileMetadata, u64)> {
+    async fn head(&self, path: &str) -> Result<(FileMetadata, u64)> {
         let _guard = self.locks.lock_ref(path).await;
-        let metadata = self.read_meta_for(path)?;
+        let metadata = self.validate_path(path)?.read()?;
         let len = self.blobs.metadata(&metadata.checksum)?.len();
         Ok((metadata, len))
     }
@@ -142,7 +184,7 @@ impl Storage for LocalStorage {
         content_is_gzipped: bool,
         checksum: Option<[u8; 32]>,
         logical_size: Option<usize>,
-    ) -> std::io::Result<()> {
+    ) -> Result<()> {
         let (decompressed_size, checksum, mut compressed) = if !content_is_gzipped {
             (
                 content.len(),
@@ -180,25 +222,25 @@ impl Storage for LocalStorage {
             )
         };
 
+        let meta_path = self.validate_path(path)?;
         let _guard = self.locks.lock_ref(path).await;
-        match self.read_meta_for(path) {
+        match meta_path.read() {
             Ok(meta) => {
                 if meta.version > version {
                     return Ok(());
                 }
                 self.blobs.decref(&meta.checksum).await?;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(StorageError::NotFound) => (),
             Err(e) => return Err(e),
         }
 
-        let dest_meta = self.metadata.join(path);
-        std::fs::create_dir_all(dest_meta.parent().unwrap())?;
+        std::fs::create_dir_all(meta_path.0.parent().unwrap())?;
 
         self.blobs.write(&checksum, &mut compressed).await?;
 
         std::fs::write(
-            dest_meta,
+            meta_path.0,
             serde_json::to_string(&FileMetadata {
                 version,
                 checksum,
@@ -211,9 +253,9 @@ impl Storage for LocalStorage {
         Ok(())
     }
 
-    async fn delete(&self, path: &str, max_version: DateTime<Utc>) -> std::io::Result<()> {
+    async fn delete(&self, path: &str, max_version: DateTime<Utc>) -> Result<()> {
         let _guard = self.locks.lock_ref(path).await;
-        let metadata = self.read_meta_for(path)?;
+        let metadata = self.validate_path(path)?.read()?;
         if metadata.version <= max_version {
             self.blobs.decref(&metadata.checksum).await?;
             std::fs::remove_file(self.metadata.join(path))?;
@@ -225,11 +267,14 @@ impl Storage for LocalStorage {
         &self,
         path: &str,
         max_version: DateTime<Utc>,
-    ) -> std::io::Result<impl Iterator<Item = std::io::Result<(String, FileMetadata)>>> {
-        let metadata = self.metadata.join(path);
-        let iter = metadata.read_dir()?;
+    ) -> Result<impl Iterator<Item = std::io::Result<(String, FileMetadata)>>> {
+        let metadata = self.validate_path(path)?;
+        let iter = metadata
+            .0
+            .read_dir()
+            .map_err(StorageError::from_io_public)?;
         Ok(FileLister {
-            metadata,
+            root: metadata.0,
             max_version,
             readdir_stack: vec![iter],
         })
